@@ -26,7 +26,7 @@ import time
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -116,6 +116,16 @@ async def _delete_message(bot_instance: Bot, chat_id: int, message_id):
         pass  # сообщение могло быть уже удалено — не критично
 
 
+async def _safe_answer(callback: CallbackQuery, *args, **kwargs):
+    """Отвечает на нажатие кнопки, но не роняет всю остальную логику,
+    если Telegram скажет, что запрос уже "устарел" (например, если сеть
+    подтормозила ещё до того, как мы успели ответить)."""
+    try:
+        await callback.answer(*args, **kwargs)
+    except TelegramBadRequest:
+        pass
+
+
 async def _delete_last_question(bot_instance: Bot, session: dict):
     await _delete_message(bot_instance, session["last_chat_id"], session["last_message_id"])
 
@@ -177,14 +187,14 @@ async def on_start_test(callback: CallbackQuery):
     user_id = callback.from_user.id
     session = sessions.get(user_id)
     if not session or session["stage"] != "not_started":
-        await callback.answer()
+        await _safe_answer(callback)
         return
 
     chat_id = callback.message.chat.id
     bot_instance = callback.bot
 
+    await _safe_answer(callback)
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.answer()
 
     session["stage"] = "awaiting_name"
     await bot_instance.send_message(chat_id, "Как тебя зовут? Напиши имя и фамилию.")
@@ -255,7 +265,7 @@ async def on_reading_done(callback: CallbackQuery):
     user_id = callback.from_user.id
     session = sessions.get(user_id)
     if not session or session["stage"] != "reading":
-        await callback.answer()
+        await _safe_answer(callback)
         return
 
     chat_id = callback.message.chat.id
@@ -264,7 +274,7 @@ async def on_reading_done(callback: CallbackQuery):
     if user_id in question_timer_tasks:
         question_timer_tasks[user_id].cancel()
 
-    await callback.answer()
+    await _safe_answer(callback)
     await _delete_last_question(bot_instance, session)
     await _delete_message(bot_instance, chat_id, session["passage_message_id"])
     await _start_reproduction_block(user_id, chat_id, bot_instance)
@@ -375,11 +385,11 @@ async def on_answer(callback: CallbackQuery):
     user_id = callback.from_user.id
     session = sessions.get(user_id)
     if not session or session["stage"] not in ("reproduction", "logic"):
-        await callback.answer()
+        await _safe_answer(callback)
         return
 
     if session["answered_current"]:
-        await callback.answer("Уже учтено.")
+        await _safe_answer(callback, "Уже учтено.")
         return
 
     session["answered_current"] = True
@@ -391,8 +401,8 @@ async def on_answer(callback: CallbackQuery):
     q = bank[session["index"]]
     _record_answer(session, q, chosen_index=chosen_index, timed_out=False)
 
+    await _safe_answer(callback)
     await callback.message.delete()
-    await callback.answer()
     await _advance(user_id, callback.message.chat.id, callback.bot)
 
 
@@ -429,14 +439,14 @@ async def on_start_block2(callback: CallbackQuery):
     user_id = callback.from_user.id
     session = sessions.get(user_id)
     if not session or session["stage"] != "reproduction_done":
-        await callback.answer()
+        await _safe_answer(callback)
         return
 
     chat_id = callback.message.chat.id
     bot_instance = callback.bot
 
+    await _safe_answer(callback)
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.answer()
     await _start_logic_block(user_id, chat_id, bot_instance)
 
 
@@ -504,18 +514,22 @@ async def _finish_logic_block(user_id: int, chat_id: int, bot_instance: Bot, sto
 
 async def _retry_network_errors(make_request, bot, method):
     """Если конкретный запрос к Telegram (отправка сообщения, кнопки и т.д.)
-    столкнётся с кратковременным сетевым сбоем — тихо повторяем его до
-    4 раз с небольшой паузой, вместо того чтобы сразу терять сообщение."""
-    attempts = 4
-    delay = 2
+    столкнётся с кратковременным сетевым сбоем — тихо повторяем его
+    несколько раз с небольшой (короткой!) паузой, вместо того чтобы сразу
+    терять сообщение. Паузы намеренно короткие: у Telegram есть узкое окно
+    времени на ответ по нажатой кнопке (callback query), и если тратить
+    на повторы слишком много секунд, это окно истечёт само по себе."""
+    delays = (0.3, 0.7, 1.5)
+    attempts = len(delays) + 1
     for attempt in range(1, attempts + 1):
         try:
             return await make_request(bot, method)
         except TelegramNetworkError:
             if attempt == attempts:
                 raise
+            delay = delays[attempt - 1]
             logger.warning(
-                "Сетевая ошибка при вызове %s (попытка %s/%s), повтор через %s сек",
+                "Сетевая ошибка при вызове %s (попытка %s/%s), повтор через %.1f сек",
                 type(method).__name__, attempt, attempts, delay,
             )
             await asyncio.sleep(delay)
