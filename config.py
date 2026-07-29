@@ -6,6 +6,10 @@
   BOT_TOKEN          - токен Telegram-бота (получить у @BotFather)
   RECRUITER_CHAT_ID  - Telegram chat_id, куда бот присылает готовые отчёты
                         (свой личный chat_id можно узнать через @userinfobot)
+  WEBHOOK_HOST        - адрес приложения, куда Telegram будет присылать
+                        обновления, например https://твой-домен.twc1.net
+                        (без слэша в конце). Технический домен приложения
+                        виден в панели Timeweb Cloud на вкладке "Дашборд".
 
 Примечание: сейчас бот считает только "сколько правильных из скольки" —
 это делает сам код, без нейросети и без затрат. Ключ Anthropic API
@@ -16,6 +20,7 @@ import os
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 RECRUITER_CHAT_ID = int(os.environ["RECRUITER_CHAT_ID"])
+WEBHOOK_HOST = os.environ["WEBHOOK_HOST"].rstrip("/")
 
 # Лимит времени по умолчанию на один вопрос логического блока (в секундах)
 DEFAULT_QUESTION_TIME_LIMIT = 60

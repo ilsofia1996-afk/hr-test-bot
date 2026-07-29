@@ -29,6 +29,8 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 
 from config import (
     BOT_TOKEN,
@@ -36,6 +38,7 @@ from config import (
     READING_TIME_LIMIT,
     RECRUITER_CHAT_ID,
     REPRODUCTION_BLOCK_TIME_LIMIT,
+    WEBHOOK_HOST,
 )
 from questions import LOGIC_QUESTIONS, REPRODUCTION_PASSAGE, REPRODUCTION_QUESTIONS
 
@@ -539,7 +542,16 @@ async def _retry_network_errors(make_request, bot, method):
             await asyncio.sleep(delay)
 
 
-async def main():
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+
+
+async def on_startup(bot: Bot):
+    webhook_url = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+    await bot.set_webhook(webhook_url)
+    logger.info("Webhook установлен: %s", webhook_url)
+
+
+def main():
     # Многие облачные серверы имеют "сломанный" (не работающий, но и не
     # сразу отказывающий) IPv6-маршрут до внешних серверов. aiohttp по
     # умолчанию может пытаться идти именно через IPv6 и виснуть по
@@ -552,16 +564,19 @@ async def main():
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
     dp.include_router(router)
+    dp.startup.register(on_startup)
 
-    # Если сеть на сервере на секунду "моргнёт" (например, сразу после
-    # запуска контейнера) — не даём всей программе упасть насовсем,
-    # а просто пробуем переподключиться через несколько секунд.
-    while True:
-        try:
-            await dp.start_polling(bot)
-        except Exception:
-            logger.exception("Бот упал с ошибкой, перезапуск через 5 секунд")
-            await asyncio.sleep(5)
+    # Вебхук вместо long polling: Telegram сам присылает боту обновления
+    # по HTTPS, а не бот их постоянно "выпрашивает". Это не зависит от
+    # той же нестабильной исходящей сети, которая мешала long polling.
+    app = web.Application()
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
+    setup_application(app, dp, bot=bot)
+    web.run_app(app, host="0.0.0.0", port=8080)
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
