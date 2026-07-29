@@ -474,7 +474,16 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
     dp.include_router(router)
-    await dp.start_polling(bot)
+
+    # Если сеть на сервере на секунду "моргнёт" (например, сразу после
+    # запуска контейнера) — не даём всей программе упасть насовсем,
+    # а просто пробуем переподключиться через несколько секунд.
+    while True:
+        try:
+            await dp.start_polling(bot)
+        except Exception:
+            logger.exception("Бот упал с ошибкой, перезапуск через 5 секунд")
+            await asyncio.sleep(5)
 
 
 if __name__ == "__main__":
