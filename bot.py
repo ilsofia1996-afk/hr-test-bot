@@ -435,29 +435,33 @@ async def _finish_logic_block(user_id: int, chat_id: int, bot_instance: Bot, sto
     # Простой подсчёт баллов — без нейросети, без затрат.
     rep_correct = sum(1 for a in session["reproduction_answers"] if a["correct"])
     rep_answered = len(session["reproduction_answers"])
+    rep_left = REP_TOTAL - rep_answered
     log_correct = sum(1 for a in session["logic_answers"] if a["correct"])
     log_answered = len(session["logic_answers"])
+    log_left = LOGIC_TOTAL - log_answered
     total_correct = rep_correct + log_correct
-    total_answered = rep_answered + log_answered
+    total_questions = REP_TOTAL + LOGIC_TOTAL
 
-    rep_note = ""
-    if session["reproduction_stopped_by_timeout"]:
-        rep_left = REP_TOTAL - rep_answered
-        rep_note = f" ⚠️ время блока закончилось — не успела ответить на {rep_left} из {REP_TOTAL}"
+    rep_line = f"Воспроизведение: {rep_correct}/{REP_TOTAL} верно"
+    log_line = f"Интеллект и логика: {log_correct}/{LOGIC_TOTAL} верно"
 
-    log_note = ""
-    if session["logic_stopped_by_timeout"]:
-        log_left = LOGIC_TOTAL - log_answered
-        log_note = f" ⚠️ время блока закончилось — не успела ответить на {log_left} из {LOGIC_TOTAL}"
-
-    percent = round(100 * total_correct / total_answered) if total_answered else 0
+    percent = round(100 * total_correct / total_questions) if total_questions else 0
     report = (
         f"📋 Результаты теста\n"
         f"Кандидат: {session['candidate_name']}\n\n"
-        f"Воспроизведение: {rep_correct}/{rep_answered} верно{rep_note}\n"
-        f"Интеллект и логика: {log_correct}/{log_answered} верно{log_note}\n\n"
-        f"Итого: {total_correct}/{total_answered} верно ({percent}%)"
+        f"{rep_line}\n"
+        f"{log_line}\n\n"
+        f"Итого: {total_correct}/{total_questions} верно ({percent}%)"
     )
+
+    warnings = []
+    if session["reproduction_stopped_by_timeout"] and rep_left:
+        warnings.append(f"⚠️ Не успел(а) ответить на {rep_left} вопрос(а/ов) блока «Воспроизведение» — закончилось время")
+    if session["logic_stopped_by_timeout"] and log_left:
+        warnings.append(f"⚠️ Не успел(а) ответить на {log_left} вопрос(а/ов) блока «Интеллект и логика» — закончилось время")
+
+    if warnings:
+        report += "\n\n" + "\n".join(warnings)
 
     await bot_instance.send_message(RECRUITER_CHAT_ID, report)
 
