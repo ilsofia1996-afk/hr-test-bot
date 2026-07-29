@@ -26,6 +26,7 @@ import time
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -61,6 +62,7 @@ def _new_session(candidate_name: str) -> dict:
         # reproduction_done -> logic -> done
         "stage": "not_started",
         "index": 0,
+        "last_activity": time.monotonic(),
         "reproduction_answers": [],
         "logic_answers": [],
         "question_started_at": None,
@@ -122,9 +124,25 @@ async def _delete_last_question(bot_instance: Bot, session: dict):
 # Старт, имя, начало блока 1
 # ---------------------------------------------------------------------------
 
+STALE_SESSION_SECONDS = 30 * 60  # если сессия "зависла" дольше этого — разрешаем начать заново
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     user_id = message.from_user.id
+
+    existing = sessions.get(user_id)
+    if existing:
+        idle = time.monotonic() - existing.get("last_activity", 0)
+        if idle < STALE_SESSION_SECONDS:
+            # Тест уже идёт — игнорируем повторный /start, чтобы не создать
+            # второй параллельный поток вопросов поверх текущего.
+            await message.answer(
+                "Тест уже начат — продолжай отвечать на текущий вопрос выше. "
+                "Если что-то зависло, подожди немного и попробуй ещё раз."
+            )
+            return
+
     _cancel_user_tasks(user_id)  # на случай "зависших" таймеров от прошлой попытки
 
     candidate_name = message.from_user.full_name or str(user_id)
@@ -284,6 +302,7 @@ async def _ask_question(user_id: int, chat_id: int, bot_instance: Bot):
 
     session["answered_current"] = False
     session["question_started_at"] = time.monotonic()
+    session["last_activity"] = time.monotonic()
 
     prefix = "rep_ans" if session["stage"] == "reproduction" else "log_ans"
     keyboard = _options_keyboard(q["options"], prefix)
@@ -304,6 +323,7 @@ async def _ask_question(user_id: int, chat_id: int, bot_instance: Bot):
 
 
 def _record_answer(session: dict, q: dict, chosen_index, timed_out: bool):
+    session["last_activity"] = time.monotonic()
     time_taken = time.monotonic() - session["question_started_at"]
     is_correct = (chosen_index is not None) and (chosen_index == q["correct_index"])
 
@@ -472,6 +492,25 @@ async def _finish_logic_block(user_id: int, chat_id: int, bot_instance: Bot, sto
     sessions.pop(user_id, None)
 
 
+async def _retry_network_errors(make_request, bot, method):
+    """Если конкретный запрос к Telegram (отправка сообщения, кнопки и т.д.)
+    столкнётся с кратковременным сетевым сбоем — тихо повторяем его до
+    4 раз с небольшой паузой, вместо того чтобы сразу терять сообщение."""
+    attempts = 4
+    delay = 2
+    for attempt in range(1, attempts + 1):
+        try:
+            return await make_request(bot, method)
+        except TelegramNetworkError:
+            if attempt == attempts:
+                raise
+            logger.warning(
+                "Сетевая ошибка при вызове %s (попытка %s/%s), повтор через %s сек",
+                type(method).__name__, attempt, attempts, delay,
+            )
+            await asyncio.sleep(delay)
+
+
 async def main():
     # Многие облачные серверы имеют "сломанный" (не работающий, но и не
     # сразу отказывающий) IPv6-маршрут до внешних серверов. aiohttp по
@@ -480,6 +519,7 @@ async def main():
     # Принудительно используем только IPv4, чтобы это исключить.
     session = AiohttpSession()
     session._connector_init["family"] = socket.AF_INET
+    session.middleware()(_retry_network_errors)
 
     bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
