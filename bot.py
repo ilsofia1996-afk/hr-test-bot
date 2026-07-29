@@ -286,6 +286,8 @@ async def on_reading_done(callback: CallbackQuery):
 
 async def _start_reproduction_block(user_id: int, chat_id: int, bot_instance: Bot):
     session = sessions[user_id]
+    if session["stage"] != "reading":
+        return  # уже запущено другим путём (кнопка/таймер сработали почти одновременно)
     session["stage"] = "reproduction"
     session["index"] = 0
     await bot_instance.send_message(chat_id, "Блок 1: вопросы по тексту выше.")
@@ -294,6 +296,8 @@ async def _start_reproduction_block(user_id: int, chat_id: int, bot_instance: Bo
 
 async def _start_logic_block(user_id: int, chat_id: int, bot_instance: Bot):
     session = sessions[user_id]
+    if session["stage"] != "reproduction_done":
+        return  # уже запущено другим путём
     session["stage"] = "logic"
     session["index"] = 0
     await bot_instance.send_message(chat_id, "Блок 2: логические задачи. Каждая — на время.")
@@ -541,7 +545,7 @@ async def main():
     # умолчанию может пытаться идти именно через IPv6 и виснуть по
     # тайм-ауту, хотя обычный IPv4 при этом работает нормально.
     # Принудительно используем только IPv4, чтобы это исключить.
-    session = AiohttpSession()
+    session = AiohttpSession(timeout=10)
     session._connector_init["family"] = socket.AF_INET
     session.middleware()(_retry_network_errors)
 
