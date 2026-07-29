@@ -124,7 +124,17 @@ async def _delete_last_question(bot_instance: Bot, session: dict):
 # Старт, имя, начало блока 1
 # ---------------------------------------------------------------------------
 
-STALE_SESSION_SECONDS = 30 * 60  # если сессия "зависла" дольше этого — разрешаем начать заново
+STALE_SESSION_SECONDS = 5 * 60  # если сессия "зависла" дольше этого — разрешаем начать заново
+
+
+@router.message(F.text == "/reset")
+async def cmd_reset(message: Message):
+    """Принудительно сбрасывает сессию, не дожидаясь тайм-аута "зависшей"
+    сессии — полезно при тестировании самим собой."""
+    user_id = message.from_user.id
+    _cancel_user_tasks(user_id)
+    sessions.pop(user_id, None)
+    await message.answer("Сессия сброшена. Напиши /start, чтобы начать заново.")
 
 
 @router.message(CommandStart())
@@ -139,7 +149,7 @@ async def cmd_start(message: Message):
             # второй параллельный поток вопросов поверх текущего.
             await message.answer(
                 "Тест уже начат — продолжай отвечать на текущий вопрос выше. "
-                "Если что-то зависло, подожди немного и попробуй ещё раз."
+                "Если что-то зависло, напиши /reset, чтобы начать заново."
             )
             return
 
