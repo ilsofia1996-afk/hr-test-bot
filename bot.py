@@ -21,9 +21,11 @@ Telegram-бот для теста «Воспроизводимость, инте
 """
 import asyncio
 import logging
+import socket
 import time
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -471,7 +473,15 @@ async def _finish_logic_block(user_id: int, chat_id: int, bot_instance: Bot, sto
 
 
 async def main():
-    bot = Bot(token=BOT_TOKEN)
+    # Многие облачные серверы имеют "сломанный" (не работающий, но и не
+    # сразу отказывающий) IPv6-маршрут до внешних серверов. aiohttp по
+    # умолчанию может пытаться идти именно через IPv6 и виснуть по
+    # тайм-ауту, хотя обычный IPv4 при этом работает нормально.
+    # Принудительно используем только IPv4, чтобы это исключить.
+    session = AiohttpSession()
+    session._connector_init["family"] = socket.AF_INET
+
+    bot = Bot(token=BOT_TOKEN, session=session)
     dp = Dispatcher()
     dp.include_router(router)
 
