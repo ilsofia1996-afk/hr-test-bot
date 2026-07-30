@@ -642,7 +642,8 @@ def main():
         default=DefaultBotProperties(protect_content=True),
     )
     dp = Dispatcher()
-    dp.include_router(router)
+    if router.parent_router is None:
+        dp.include_router(router)
     dp.startup.register(on_startup)
 
     # Вебхук вместо long polling: Telegram сам присылает боту обновления
@@ -656,7 +657,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
