@@ -42,6 +42,7 @@ from aiohttp import web
 from config import (
     BOT_TOKEN,
     LOGIC_BLOCK_TIME_LIMIT,
+    PROXY_URL,
     READING_TIME_LIMIT,
     RECRUITER_CHAT_ID,
     REPRODUCTION_BLOCK_TIME_LIMIT,
@@ -632,7 +633,7 @@ def main():
     # умолчанию может пытаться идти именно через IPv6 и виснуть по
     # тайм-ауту, хотя обычный IPv4 при этом работает нормально.
     # Принудительно используем только IPv4, чтобы это исключить.
-    session = AiohttpSession(timeout=10)
+    session = AiohttpSession(timeout=10, proxy=PROXY_URL)
     session._connector_init["family"] = socket.AF_INET
     session.middleware()(_retry_network_errors)
 
