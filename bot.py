@@ -25,10 +25,17 @@ import socket
 import time
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.filters import CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
@@ -61,8 +68,9 @@ LOGIC_TOTAL = len(LOGIC_QUESTIONS)
 def _new_session(candidate_name: str) -> dict:
     return {
         "candidate_name": candidate_name,
-        # not_started -> awaiting_name -> reading -> reproduction ->
-        # reproduction_done -> logic -> done
+        "role": None,
+        # not_started -> awaiting_name -> awaiting_role -> reading ->
+        # reproduction -> reproduction_done -> logic -> done
         "stage": "not_started",
         "index": 0,
         "last_activity": time.monotonic(),
@@ -207,19 +215,72 @@ async def on_start_test(callback: CallbackQuery):
 async def on_name_input(message: Message):
     user_id = message.from_user.id
     session = sessions.get(user_id)
-    if not session or session["stage"] != "awaiting_name":
+    if not session or session["stage"] not in ("awaiting_name", "awaiting_role_other"):
         return  # игнорируем случайные сообщения вне контекста теста
 
-    candidate_name = message.text.strip()[:100]
-    if not candidate_name:
-        await message.answer("Пожалуйста, напиши своё имя текстом.")
+    if session["stage"] == "awaiting_name":
+        candidate_name = message.text.strip()[:100]
+        if not candidate_name:
+            await message.answer("Пожалуйста, напиши своё имя текстом.")
+            return
+
+        session["candidate_name"] = candidate_name
+        chat_id = message.chat.id
+        bot_instance = message.bot
+
+        await bot_instance.send_message(chat_id, f"Спасибо, {candidate_name}!")
+        await _ask_role(user_id, chat_id, bot_instance)
         return
 
-    session["candidate_name"] = candidate_name
+    # session["stage"] == "awaiting_role_other" — кандидат вписал свою должность вручную
+    role_text = message.text.strip()[:100]
+    if not role_text:
+        await message.answer("Пожалуйста, напиши название должности текстом.")
+        return
+
+    session["role"] = role_text
     chat_id = message.chat.id
     bot_instance = message.bot
+    await bot_instance.send_message(chat_id, f"Принято: {role_text}. Начинаем блок 1.")
+    await _start_reading(user_id, chat_id, bot_instance)
 
-    await bot_instance.send_message(chat_id, f"Спасибо, {candidate_name}! Начинаем блок 1.")
+
+async def _ask_role(user_id: int, chat_id: int, bot_instance: Bot):
+    session = sessions[user_id]
+    session["stage"] = "awaiting_role"
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Организатор", callback_data="role:Организатор")],
+            [InlineKeyboardButton(text="Менеджер по продажам", callback_data="role:Менеджер по продажам")],
+            [InlineKeyboardButton(text="SMM", callback_data="role:SMM")],
+            [InlineKeyboardButton(text="Другое", callback_data="role:other")],
+        ]
+    )
+    await bot_instance.send_message(chat_id, "На какую должность вы претендуете?", reply_markup=keyboard)
+
+
+@router.callback_query(F.data.startswith("role:"))
+async def on_role_chosen(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    session = sessions.get(user_id)
+    if not session or session["stage"] != "awaiting_role":
+        await _safe_answer(callback)
+        return
+
+    chat_id = callback.message.chat.id
+    bot_instance = callback.bot
+    value = callback.data.split("role:", 1)[1]
+
+    await _safe_answer(callback)
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    if value == "other":
+        session["stage"] = "awaiting_role_other"
+        await bot_instance.send_message(chat_id, "Напиши название должности текстом.")
+        return
+
+    session["role"] = value
+    await bot_instance.send_message(chat_id, f"Принято: {value}. Начинаем блок 1.")
     await _start_reading(user_id, chat_id, bot_instance)
 
 
@@ -337,12 +398,14 @@ async def _ask_question(user_id: int, chat_id: int, bot_instance: Bot):
     block_label = "Блок 1" if session["stage"] == "reproduction" else "Блок 2"
     question_num = session["index"] + 1
     total = _block_total(session)
+    caption = f"{block_label} — Вопрос {question_num}/{total}\n\n{q['text']}"
 
-    msg = await bot_instance.send_message(
-        chat_id,
-        f"{block_label} — Вопрос {question_num}/{total}\n\n{q['text']}",
-        reply_markup=keyboard,
-    )
+    if q.get("image"):
+        photo = FSInputFile(q["image"])
+        msg = await bot_instance.send_photo(chat_id, photo=photo, caption=caption, reply_markup=keyboard)
+    else:
+        msg = await bot_instance.send_message(chat_id, caption, reply_markup=keyboard)
+
     session["last_message_id"] = msg.message_id
     session["last_chat_id"] = chat_id
     # Таймера на отдельный вопрос больше нет — только на блок целиком
@@ -497,7 +560,8 @@ async def _finish_logic_block(user_id: int, chat_id: int, bot_instance: Bot, sto
     percent = round(100 * total_correct / total_questions) if total_questions else 0
     report = (
         f"📋 Результаты теста\n"
-        f"Кандидат: {session['candidate_name']}\n\n"
+        f"Кандидат: {session['candidate_name']}\n"
+        f"Должность: {session.get('role') or 'не указана'}\n\n"
         f"{rep_line}\n"
         f"{log_line}\n\n"
         f"Итого: {total_correct}/{total_questions} верно ({percent}%)"
@@ -561,7 +625,11 @@ def main():
     session._connector_init["family"] = socket.AF_INET
     session.middleware()(_retry_network_errors)
 
-    bot = Bot(token=BOT_TOKEN, session=session)
+    bot = Bot(
+        token=BOT_TOKEN,
+        session=session,
+        default=DefaultBotProperties(protect_content=True),
+    )
     dp = Dispatcher()
     dp.include_router(router)
     dp.startup.register(on_startup)
