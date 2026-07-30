@@ -130,11 +130,22 @@ async def _delete_message(bot_instance: Bot, chat_id: int, message_id):
 async def _safe_answer(callback: CallbackQuery, *args, **kwargs):
     """Отвечает на нажатие кнопки, но не роняет всю остальную логику,
     если Telegram скажет, что запрос уже "устарел" (например, если сеть
-    подтормозила ещё до того, как мы успели ответить)."""
+    подтормозила ещё до того, как мы успели ответить), или если сама
+    попытка ответить упёрлась в сетевую ошибку даже после всех повторов."""
     try:
         await callback.answer(*args, **kwargs)
-    except TelegramBadRequest:
+    except (TelegramBadRequest, TelegramNetworkError):
         pass
+
+
+async def _safe(coro):
+    """Выполняет любое действие с сообщением (удаление, снятие кнопок и
+    т.д.), но не даёт сетевой ошибке оборвать остальную логику вопроса —
+    иначе бот "зависает" и не переходит к следующему шагу."""
+    try:
+        return await coro
+    except (TelegramBadRequest, TelegramNetworkError):
+        return None
 
 
 async def _delete_last_question(bot_instance: Bot, session: dict):
@@ -205,7 +216,7 @@ async def on_start_test(callback: CallbackQuery):
     bot_instance = callback.bot
 
     await _safe_answer(callback)
-    await callback.message.edit_reply_markup(reply_markup=None)
+    await _safe(callback.message.edit_reply_markup(reply_markup=None))
 
     session["stage"] = "awaiting_name"
     await bot_instance.send_message(chat_id, "Как тебя зовут? Напиши имя и фамилию.")
@@ -272,7 +283,7 @@ async def on_role_chosen(callback: CallbackQuery):
     value = callback.data.split("role:", 1)[1]
 
     await _safe_answer(callback)
-    await callback.message.edit_reply_markup(reply_markup=None)
+    await _safe(callback.message.edit_reply_markup(reply_markup=None))
 
     if value == "other":
         session["stage"] = "awaiting_role_other"
@@ -472,7 +483,7 @@ async def on_answer(callback: CallbackQuery):
     _record_answer(session, q, chosen_index=chosen_index, timed_out=False)
 
     await _safe_answer(callback)
-    await callback.message.delete()
+    await _safe(callback.message.delete())
     await _advance(user_id, callback.message.chat.id, callback.bot)
 
 
@@ -516,7 +527,7 @@ async def on_start_block2(callback: CallbackQuery):
     bot_instance = callback.bot
 
     await _safe_answer(callback)
-    await callback.message.edit_reply_markup(reply_markup=None)
+    await _safe(callback.message.edit_reply_markup(reply_markup=None))
     await _start_logic_block(user_id, chat_id, bot_instance)
 
 
