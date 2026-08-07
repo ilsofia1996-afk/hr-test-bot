@@ -70,8 +70,8 @@ def _new_session(candidate_name: str) -> dict:
     return {
         "candidate_name": candidate_name,
         "role": None,
-        # not_started -> awaiting_name -> awaiting_role -> reading ->
-        # reproduction -> reproduction_done -> logic -> done
+        # not_started -> awaiting_name -> awaiting_role -> reading_prompt ->
+        # reading -> reproduction -> reproduction_done -> logic -> done
         "stage": "not_started",
         "index": 0,
         "last_activity": time.monotonic(),
@@ -302,6 +302,35 @@ async def on_role_chosen(callback: CallbackQuery):
 
 async def _start_reading(user_id: int, chat_id: int, bot_instance: Bot):
     session = sessions[user_id]
+    session["stage"] = "reading_prompt"
+
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="📖 Читать текст", callback_data="show_passage")]]
+    )
+    msg = await bot_instance.send_message(
+        chat_id,
+        f"Сейчас появится текст-инструкция. На чтение даётся {READING_TIME_LIMIT} секунд "
+        f"с момента, как ты его откроешь — время не идёт, пока не нажмёшь кнопку ниже.",
+        reply_markup=keyboard,
+    )
+    session["last_message_id"] = msg.message_id
+    session["last_chat_id"] = chat_id
+
+
+@router.callback_query(F.data == "show_passage")
+async def on_show_passage(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    session = sessions.get(user_id)
+    if not session or session["stage"] != "reading_prompt":
+        await _safe_answer(callback)
+        return
+
+    chat_id = callback.message.chat.id
+    bot_instance = callback.bot
+
+    await _safe_answer(callback)
+    await _safe(callback.message.delete())
+
     session["stage"] = "reading"
 
     passage_msg = await bot_instance.send_message(chat_id, REPRODUCTION_PASSAGE)
@@ -327,7 +356,7 @@ async def _start_reading(user_id: int, chat_id: int, bot_instance: Bot):
 
     question_timer_tasks[user_id] = asyncio.create_task(reading_timeout())
 
-    # Таймер блока 1 — покрывает и чтение, и вопросы блока
+    # Таймер блока 1 — покрывает и чтение (с момента открытия текста), и вопросы блока
     async def block_timeout():
         await asyncio.sleep(REPRODUCTION_BLOCK_TIME_LIMIT)
         if sessions.get(user_id, {}).get("stage") in ("reading", "reproduction"):
